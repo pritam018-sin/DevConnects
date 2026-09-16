@@ -1,6 +1,6 @@
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
-import { Message } from "../models/message.model.js";
+import { Message } from "../models/message.Model.js";
 
 let io;
 const onlineUsers = new Map();
@@ -27,9 +27,12 @@ export const setupSocket = (server) => {
   });
 
   io.on("connection", (socket) => {
-    const userId = socket.userId;
+    const userId = String(socket.userId);
     onlineUsers.set(userId, socket.id);
     console.log("🟢 User connected:", userId);
+
+    // Broadcast updated online users list
+    io.emit("getOnlineUsers", Array.from(onlineUsers.keys()));
 
     // 📩 Listen for sendMessage event
     socket.on("sendMessage", async ({ receiverId, content }) => {
@@ -43,7 +46,7 @@ export const setupSocket = (server) => {
       });
 
       // 2️⃣ Emit to receiver if online
-      const receiverSocketId = onlineUsers.get(receiverId);
+      const receiverSocketId = onlineUsers.get(String(receiverId));
       if (receiverSocketId) {
         io.to(receiverSocketId).emit("receiveMessage", newMessage);
       }
@@ -52,13 +55,33 @@ export const setupSocket = (server) => {
       io.to(socket.id).emit("messageSent", newMessage);
     });
 
+    // 🟢 Real-time typing indicators
+    socket.on("typing", ({ receiverId }) => {
+      if (!receiverId) return;
+      const receiverSocketId = onlineUsers.get(String(receiverId));
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("userTyping", { senderId: userId });
+      }
+    });
+
+    socket.on("stopTyping", ({ receiverId }) => {
+      if (!receiverId) return;
+      const receiverSocketId = onlineUsers.get(String(receiverId));
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("userStoppedTyping", { senderId: userId });
+      }
+    });
+
     // 🟢 Handle message read
     socket.on("markAsRead", async (messageId) => {
       const message = await Message.findById(messageId);
-      if (message && message.receiver.toString() === userId.toString()) {
+      if (message && message.receiver.toString() === userId) {
         message.read = true;
         await message.save();
-        io.to(onlineUsers.get(message.sender.toString())).emit("messageRead", messageId);
+        const senderSocketId = onlineUsers.get(message.sender.toString());
+        if (senderSocketId) {
+          io.to(senderSocketId).emit("messageRead", messageId);
+        }
       }
     });
 
@@ -66,6 +89,7 @@ export const setupSocket = (server) => {
     socket.on("disconnect", () => {
       onlineUsers.delete(userId);
       console.log("🔴 User disconnected:", userId);
+      io.emit("getOnlineUsers", Array.from(onlineUsers.keys()));
     });
   });
 };

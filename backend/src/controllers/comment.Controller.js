@@ -5,6 +5,7 @@ import { Post } from "../models/post.Model.js";
 import { User } from "../models/user.Model.js";
 import { Comment } from "../models/comment.Model.js";
 import { Project } from "../models/project.Model.js";
+import { sendSystemNotification } from "../utils/notificationHelper.js";
 
 const createComment = asyncHandler(async (req, res) => {
   const { parentId, parentType, content, parentComment } = req.body;
@@ -46,6 +47,20 @@ const createComment = asyncHandler(async (req, res) => {
     "author",
     "fullname username avatar"
   );
+
+  // Dispatch System Notification
+  const receiverId = parentDoc.author || parentDoc.owner;
+  if (receiverId) {
+    const trimmedSnippet = content.trim().slice(0, 35) + (content.trim().length > 35 ? "..." : "");
+    sendSystemNotification({
+      receiver: receiverId,
+      sender: req.user._id,
+      type: "comment",
+      message: `@${req.user.username} echoed in your ${parentType} discussion: "${trimmedSnippet}" 💬`,
+      link: parentType === "Post" ? "/" : "/projects",
+    }).catch((err) => console.error("Notification error:", err.message));
+  }
+
   res
     .status(201)
     .json(new ApiResponse(201, populatedComment, "Comment added successfully"));
@@ -63,7 +78,7 @@ const replyToComment = asyncHandler(async (req, res) => {
   const reply = await Comment.create({
     parentId: parentComment.parentId,
     parentType: parentComment.parentType,
-    author: req.user._id,
+    author: req.user.id,
     content: content.trim(),
     parentComment: commentId,
   });
@@ -71,9 +86,22 @@ const replyToComment = asyncHandler(async (req, res) => {
   parentComment.replies.push(reply._id);
   await parentComment.save();
 
-  const populatedReply = await Comment.findById(reply._id)
-    .populate("author", "fullname username avatar")
-    .populate("parentComment", "author content");
+  const populatedReply = await Comment.findById(reply._id).populate(
+    "author",
+    "fullname username avatar"
+  );
+
+  // Dispatch System Notification for Reply
+  if (parentComment.author) {
+    const trimmedSnippet = content.trim().slice(0, 35) + (content.trim().length > 35 ? "..." : "");
+    sendSystemNotification({
+      receiver: parentComment.author,
+      sender: req.user._id,
+      type: "reply",
+      message: `@${req.user.username} replied to your discussion thread: "${trimmedSnippet}" 💬`,
+      link: "/",
+    }).catch((err) => console.error("Notification error:", err.message));
+  }
 
   res
     .status(201)

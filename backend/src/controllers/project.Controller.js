@@ -8,8 +8,7 @@ import { Comment } from "../models/comment.Model.js";
 import { cloudinaryUpload } from "../utils/cloudnaryService.js";
 
 const createProject = asyncHandler(async (req, res) => {
-  const { title, description, techStack, githubLink, liveLink, thumbnail } =
-    req.body;
+  let { title, description, techStack, githubLink, liveLink } = req.body;
 
   if (!title || !description) {
     throw new ApiError(400, "Title and description are required");
@@ -23,11 +22,24 @@ const createProject = asyncHandler(async (req, res) => {
   if (!thumbnailCloud) {
     throw new ApiError(500, "Thumbnail upload failed");
   }
+
+  let parsedTechStack = [];
+  if (Array.isArray(techStack)) {
+    parsedTechStack = techStack;
+  } else if (typeof techStack === "string") {
+    try {
+      const json = JSON.parse(techStack);
+      parsedTechStack = Array.isArray(json) ? json : [techStack];
+    } catch {
+      parsedTechStack = techStack.split(",").map((s) => s.trim()).filter(Boolean);
+    }
+  }
+
   const project = await Project.create({
     author: req.user._id,
     title,
     description,
-    techStack,
+    techStack: parsedTechStack,
     githubLink,
     liveLink,
     thumbnail: thumbnailCloud.url || "",
@@ -37,21 +49,29 @@ const createProject = asyncHandler(async (req, res) => {
   }
   res
     .status(201)
-    .json(new ApiResponse(201, "Project created successfully", project));
+    .json(new ApiResponse(201, project, "Project created successfully"));
 });
 
 const getAllProjects = asyncHandler(async (req, res) => {
-  let { page = 1, limit = 10, techStack } = req.query;
+  let { page = 1, limit = 10, techStack, search } = req.query;
 
   // Convert to integers
   page = parseInt(page);
   limit = parseInt(limit);
 
   const filter = {};
-  console.log("Tech Stack Filter:", techStack);
 
-  if (techStack) {
-    filter.techStack = { $regex: techStack, $options: "i" };
+  if (techStack?.trim()) {
+    filter.techStack = { $regex: techStack.trim(), $options: "i" };
+  }
+
+  if (search?.trim()) {
+    const sRegex = { $regex: search.trim(), $options: "i" };
+    filter.$or = [
+      { title: sRegex },
+      { description: sRegex },
+      { techStack: sRegex },
+    ];
   }
 
   const projects = await Project.find(filter)
@@ -88,7 +108,7 @@ const getProjectById = asyncHandler(async (req, res) => {
 const getProjectByUsername = asyncHandler(async (req, res) => {
     const { username } = req.params;
 
-    const user = await User.findOne({ username });
+    const user = await User.findOne({ username: { $regex: new RegExp(`^${username}$`, "i") } });
     if (!user) {
         throw new ApiError(404, "User not found");
     }
@@ -98,7 +118,7 @@ const getProjectByUsername = asyncHandler(async (req, res) => {
     .populate("comments")
     .sort({ createdAt: -1 });
 
-    res.status(200).json(new ApiResponse(200, "Projects fetched successfully", projects));
+    res.status(200).json(new ApiResponse(200, projects, "Projects fetched successfully"));
 });
 
 const updateProject = asyncHandler(async (req, res) => {
@@ -107,8 +127,10 @@ const updateProject = asyncHandler(async (req, res) => {
   const project = await Project.findById(projectId);
   if (!project) throw new ApiError(404, "Project not found");
 
-  if (!project.author._id.equals(req.user._id))
+  const authorId = project.author?._id || project.author;
+  if (String(authorId) !== String(req.user._id)) {
     throw new ApiError(403, "You are not authorized to update this project");
+  }
 
   const updateFields = req.body;
 
@@ -131,8 +153,8 @@ const deleteProject = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Project not found");
   }
 
-  
-  if (String(project.author._id) !== String(req.user._id)) {
+  const authorId = project.author?._id || project.author;
+  if (String(authorId) !== String(req.user._id)) {
     throw new ApiError(403, "You are not authorized to delete this project");
   }
 

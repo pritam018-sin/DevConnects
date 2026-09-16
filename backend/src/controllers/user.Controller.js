@@ -337,7 +337,11 @@ const updateCoverImage = asyncHandler(async (req, res) => {
 });
 
 const getUserProfileById = asyncHandler(async (req, res) => {
-  const userId = new mongoose.Types.ObjectId(req.user._id);
+  const targetId = req.params.userId || req.user?._id;
+  if (!targetId || !mongoose.Types.ObjectId.isValid(targetId)) {
+    throw new ApiError(400, "Valid user ID is required");
+  }
+  const userId = new mongoose.Types.ObjectId(targetId);
 
   const userWithStats = await User.aggregate([
     { $match: { _id: userId } },
@@ -410,7 +414,7 @@ const getUserProfileById = asyncHandler(async (req, res) => {
 
   return res
     .status(200)
-    .json(new ApiResponse(200, "Current user fetched successfully", userWithStats[0]));
+    .json(new ApiResponse(200, userWithStats[0], "User profile fetched successfully"));
 });
 
 const getUserProfileByUsername = asyncHandler(async (req, res) => {
@@ -421,7 +425,7 @@ const getUserProfileByUsername = asyncHandler(async (req, res) => {
   const userProfile = await User.aggregate([
     {
       $match: {
-        username: username.toLowerCase(), // usernames should be case-insensitive
+        username: { $regex: new RegExp(`^${username}$`, "i") },
       },
     },
 
@@ -465,15 +469,11 @@ const getUserProfileByUsername = asyncHandler(async (req, res) => {
       },
     },
 
-    // 👇 Final projection (public-safe)
+    // 👇 Final projection (pure inclusion)
     {
       $project: {
-        password: 0,
-        email: 0, // optional: hide for public profiles
-        followers: 0,
-        following: 0,
-        refreshToken: 0,
-        __v: 0,
+        _id: 1,
+        email: 1,
         createdAt: 1,
         fullname: 1,
         username: 1,
@@ -501,7 +501,78 @@ const getUserProfileByUsername = asyncHandler(async (req, res) => {
     );
 });
 
-//admin thing's baaki hai 
+const getAllUsers = asyncHandler(async (req, res) => {
+  const currentUserId = req.user?._id;
+  const { search } = req.query;
+
+  const matchQuery = {};
+  if (currentUserId) {
+    matchQuery._id = { $ne: new mongoose.Types.ObjectId(currentUserId) };
+  }
+  if (search?.trim()) {
+    matchQuery.$or = [
+      { username: { $regex: search.trim(), $options: "i" } },
+      { fullname: { $regex: search.trim(), $options: "i" } },
+    ];
+  }
+
+  const users = await User.aggregate([
+    { $match: matchQuery },
+    {
+      $lookup: {
+        from: "follows",
+        let: { uid: "$_id" },
+        pipeline: [
+          {
+            $match: {
+              $expr: { $eq: ["$following", "$$uid"] },
+            },
+          },
+        ],
+        as: "followers",
+      },
+    },
+    {
+      $lookup: {
+        from: "follows",
+        let: { uid: "$_id" },
+        pipeline: [
+          {
+            $match: {
+              $expr: { $eq: ["$follower", "$$uid"] },
+            },
+          },
+        ],
+        as: "following",
+      },
+    },
+    {
+      $addFields: {
+        followersCount: { $size: "$followers" },
+        followingCount: { $size: "$following" },
+      },
+    },
+    {
+      $project: {
+        _id: 1,
+        fullname: 1,
+        username: 1,
+        email: 1,
+        avatar: 1,
+        bio: 1,
+        skills: 1,
+        followersCount: 1,
+        followingCount: 1,
+        createdAt: 1,
+      },
+    },
+    { $sort: { createdAt: -1 } },
+  ]);
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, users, "Users fetched successfully"));
+});
 
 export {
   createUser,
@@ -514,5 +585,5 @@ export {
   updateCoverImage,
   getUserProfileById,
   getUserProfileByUsername,
-
+  getAllUsers,
 };

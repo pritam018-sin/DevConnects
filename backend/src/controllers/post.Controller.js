@@ -6,6 +6,7 @@ import {User} from "../models/user.Model.js";
 import { Comment} from "../models/comment.Model.js";
 import { Follow} from "../models/follow.Model.js";
 import { cloudinaryUpload } from "../utils/cloudnaryService.js";
+import { sendSystemNotification } from "../utils/notificationHelper.js";
 
 const createPost = asyncHandler(async (req, res) => {
   const { content } = req.body;
@@ -143,13 +144,25 @@ const getUserFeed = asyncHandler(async (req, res) => {
   const userId = req.user._id;
 
   const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 10;
+  const limit = parseInt(req.query.limit) || 20;
+  const sort = req.query.sort || "trending"; // "trending" | "latest" | "top"
   const skip = (page - 1) * limit;
 
   const followingDocs = await Follow.find({ follower: userId }).select("following");
-  const followingIds = followingDocs.map(f => f.following);
-
+  const followingIds = followingDocs.map((f) => f.following);
   followingIds.push(userId);
+
+  const sortStage = { isPinned: -1 };
+  if (sort === "latest") {
+    sortStage.createdAt = -1;
+  } else if (sort === "top") {
+    sortStage.pulseScore = -1;
+    sortStage.createdAt = -1;
+  } else {
+    // Trending: Hot Gravity Decay prevents old posts from dominating and smooths volatility
+    sortStage.trendingScore = -1;
+    sortStage.createdAt = -1;
+  }
 
   const feedPosts = await Post.aggregate([
     {
@@ -157,6 +170,7 @@ const getUserFeed = asyncHandler(async (req, res) => {
         author: { $in: followingIds },
       },
     },
+    // Lookup Author
     {
       $lookup: {
         from: "users",
@@ -168,46 +182,258 @@ const getUserFeed = asyncHandler(async (req, res) => {
     {
       $unwind: "$author",
     },
+    // Lookup Re-Pulse source if any
+    {
+      $lookup: {
+        from: "posts",
+        localField: "repostedFrom",
+        foreignField: "_id",
+        as: "repostedFromDoc",
+      },
+    },
+    {
+      $unwind: {
+        path: "$repostedFromDoc",
+        preserveNullAndEmptyArrays: true,
+      },
+    },
+    // Lookup Original Author of Re-Pulse
+    {
+      $lookup: {
+        from: "users",
+        localField: "repostedFromDoc.author",
+        foreignField: "_id",
+        as: "repostedAuthorDoc",
+      },
+    },
+    {
+      $unwind: {
+        path: "$repostedAuthorDoc",
+        preserveNullAndEmptyArrays: true,
+      },
+    },
+    // Lookup how many times this post has been Re-Pulsed across the platform
+    {
+      $lookup: {
+        from: "posts",
+        localField: "_id",
+        foreignField: "repostedFrom",
+        as: "repostsList",
+      },
+    },
+    // Calculate raw metrics & age in hours
+    {
+      $addFields: {
+        signalCount: { $size: { $ifNull: ["$likes", []] } },
+        echoCount: { $size: { $ifNull: ["$comments", []] } },
+        repulseCount: { $size: { $ifNull: ["$repostsList", []] } },
+        pulseScore: {
+          $add: [
+            { $multiply: [{ $size: { $ifNull: ["$likes", []] } }, 3] },
+            { $multiply: [{ $size: { $ifNull: ["$comments", []] } }, 5] },
+            { $multiply: [{ $size: { $ifNull: ["$repostsList", []] } }, 7] },
+          ],
+        },
+        ageInHours: {
+          $max: [
+            0,
+            {
+              $divide: [
+                { $subtract: [new Date(), "$createdAt"] },
+                3600000,
+              ],
+            },
+          ],
+        },
+      },
+    },
+    // Gravity-Decayed Trending Score: (pulseScore + 2) / ((ageInHours + 2) ^ 1.4)
+    {
+      $addFields: {
+        trendingScore: {
+          $divide: [
+            { $add: ["$pulseScore", 2] },
+            {
+              $pow: [
+                { $add: ["$ageInHours", 2] },
+                1.4,
+              ],
+            },
+          ],
+        },
+      },
+    },
+    // Project final clean document
     {
       $project: {
         _id: 1,
         content: 1,
         image: 1,
         createdAt: 1,
+        isPinned: 1,
+        likes: 1,
+        comments: 1,
+        signalCount: 1,
+        echoCount: 1,
+        repulseCount: 1,
+        pulseScore: 1,
+        trendingScore: 1,
+        hasRepulsed: {
+          $in: [req.user._id, { $ifNull: ["$repostsList.author", []] }],
+        },
+        repostedFrom: {
+          $cond: {
+            if: { $ne: ["$repostedFromDoc", null] },
+            then: {
+              _id: "$repostedFromDoc._id",
+              content: "$repostedFromDoc.content",
+              image: "$repostedFromDoc.image",
+              createdAt: "$repostedFromDoc.createdAt",
+              author: {
+                _id: "$repostedAuthorDoc._id",
+                fullname: "$repostedAuthorDoc.fullname",
+                username: "$repostedAuthorDoc.username",
+                avatar: "$repostedAuthorDoc.avatar",
+              },
+            },
+            else: null,
+          },
+        },
         "author._id": 1,
         "author.fullname": 1,
         "author.username": 1,
         "author.avatar": 1,
       },
     },
-    { $sort: { createdAt: -1 } },
+    // Dynamic Sort based on user selected mode
+    {
+      $sort: sortStage,
+    },
     { $skip: skip },
     { $limit: limit },
   ]);
 
-  if(!feedPosts.length){
-    throw new ApiError(404, "No posts found in your feed");
-  }
-
   return res
     .status(200)
-    .json(new ApiResponse(200, feedPosts, "User feed fetched successfully"));
+    .json(new ApiResponse(200, feedPosts || [], "User feed fetched successfully"));
 });
 
 const getPostsByUsername = asyncHandler(async (req, res) => {
   const { username } = req.params;
+  const cleanUsername = (username || "").replace(/^@/, "").trim();
 
-  const user = await User.findOne({ username });
+  const user = await User.findOne({ username: { $regex: new RegExp(`^${cleanUsername}$`, "i") } });
   if (!user) throw new ApiError(404, "User not found");
 
-  const posts = await Post.find({ author: user._id })
+  const posts = await Post.find({
+    author: user._id,
+    $or: [{ repostedFrom: null }, { repostedFrom: { $exists: false } }],
+  })
     .populate("author", "fullname username avatar")
-    .sort({ createdAt: -1 });
+    .sort({ isPinned: -1, createdAt: -1 })
+    .lean();
+
+  // Also get repulse counts for each post
+  const postIds = posts.map((p) => p._id);
+  const repulses = await Post.find({ repostedFrom: { $in: postIds } }).select("repostedFrom author").lean();
+  const repulseMap = {};
+  repulses.forEach((r) => {
+    const origId = r.repostedFrom?.toString();
+    if (origId) {
+      if (!repulseMap[origId]) repulseMap[origId] = [];
+      repulseMap[origId].push(r.author?.toString());
+    }
+  });
+
+  const currentUserId = req.user?._id ? req.user._id.toString() : null;
+
+  const enrichedPosts = posts.map((post) => {
+    const pId = post._id.toString();
+    const repostAuthors = repulseMap[pId] || [];
+    const signalCount = Array.isArray(post.likes) ? post.likes.length : 0;
+    const echoCount = Array.isArray(post.comments) ? post.comments.length : 0;
+    const repulseCount = repostAuthors.length;
+    const pulseScore = signalCount * 3 + echoCount * 5 + repulseCount * 7;
+    const hasRepulsed = currentUserId ? repostAuthors.includes(currentUserId) : false;
+
+    return {
+      ...post,
+      signalCount,
+      echoCount,
+      repulseCount,
+      pulseScore,
+      hasRepulsed,
+    };
+  });
 
   return res
     .status(200)
-    .json(new ApiResponse(200, posts, "Posts by user fetched successfully"));
+    .json(new ApiResponse(200, enrichedPosts, "Posts by user fetched successfully"));
 });
+
+const getRepulsesByUsername = asyncHandler(async (req, res) => {
+  const { username } = req.params;
+  const cleanUsername = (username || "").replace(/^@/, "").trim();
+
+  const user = await User.findOne({ username: { $regex: new RegExp(`^${cleanUsername}$`, "i") } });
+  if (!user) throw new ApiError(404, "User not found");
+
+  const repulses = await Post.find({
+    author: user._id,
+    repostedFrom: { $ne: null },
+  })
+    .populate("author", "fullname username avatar")
+    .populate({
+      path: "repostedFrom",
+      populate: { path: "author", select: "fullname username avatar" },
+    })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const originalPostIds = repulses
+    .map((r) => r.repostedFrom?._id)
+    .filter(Boolean);
+
+  const allReposts = await Post.find({ repostedFrom: { $in: originalPostIds } })
+    .select("repostedFrom author")
+    .lean();
+
+  const repulseMap = {};
+  allReposts.forEach((r) => {
+    const origId = r.repostedFrom?.toString();
+    if (origId) {
+      if (!repulseMap[origId]) repulseMap[origId] = [];
+      repulseMap[origId].push(r.author?.toString());
+    }
+  });
+
+  const currentUserId = req.user?._id ? req.user._id.toString() : null;
+
+  const enrichedRepulses = repulses.map((item) => {
+    const orig = item.repostedFrom;
+    if (!orig) return item;
+
+    const pId = orig._id?.toString();
+    const repostAuthors = (pId && repulseMap[pId]) || [];
+    const signalCount = Array.isArray(orig.likes) ? orig.likes.length : 0;
+    const echoCount = Array.isArray(orig.comments) ? orig.comments.length : 0;
+    const repulseCount = repostAuthors.length;
+    const hasRepulsed = currentUserId ? repostAuthors.includes(currentUserId) : false;
+
+    return {
+      ...item,
+      signalCount,
+      echoCount,
+      repulseCount,
+      hasRepulsed,
+    };
+  });
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, enrichedRepulses, "User re-pulses fetched successfully"));
+});
+
 
 const getUserAllPosts = asyncHandler(async (req, res) => {
   const userId = req.user._id;
@@ -225,7 +451,7 @@ const togglePinnedPost = asyncHandler(async (req, res) => {
   const { postId } = req.params;
 
   const post = await Post.findOne({ _id: postId, author: req.user._id })
-  .populate("author", "fullname username avatar");
+    .populate("author", "fullname username avatar");
   if (!post) throw new ApiError(404, "Post not found or unauthorized");
 
   post.isPinned = !post.isPinned;
@@ -240,49 +466,58 @@ const repost = asyncHandler(async (req, res) => {
   const { postId } = req.params;
 
   // ✅ Find original post
-  const originalPost = await Post.findById(postId)
-    .populate("author", "fullname username avatar");
+  const originalPost = await Post.findById(postId).populate("author", "fullname username avatar");
 
   if (!originalPost) {
-    throw new ApiError(404, "Original post not found");
+    throw new ApiError(404, "Original pulse not found");
   }
 
   // ✅ Prevent self-repost
   if (originalPost.author._id.toString() === req.user._id.toString()) {
-    throw new ApiError(400, "You cannot repost your own post");
+    throw new ApiError(400, "You cannot re-pulse your own pulse");
   }
 
-  // ✅ Prevent duplicate repost (same user reposting same post again)
+  // ✅ Check if already re-pulsed -> UN-PULSE!
   const alreadyReposted = await Post.findOne({
     author: req.user._id,
     repostedFrom: originalPost._id,
   });
+
   if (alreadyReposted) {
-    throw new ApiError(400, "You already reposted this post");
+    await Post.findByIdAndDelete(alreadyReposted._id);
+    return res
+      .status(200)
+      .json(new ApiResponse(200, { unrepulsed: true, reposted: false }, "Pulse un-repulsed successfully"));
   }
 
-  // ✅ Create repost
-  const repost = await Post.create({
+  // ✅ Create re-pulse
+  const newRepost = await Post.create({
     author: req.user._id,
     repostedFrom: originalPost._id,
   });
 
-  // ✅ Populate full data (both repost author & original author)
-  const populatedRepost = await Post.findById(repost._id)
+  const populatedRepost = await Post.findById(newRepost._id)
     .populate("author", "fullname username avatar")
     .populate({
       path: "repostedFrom",
       populate: { path: "author", select: "fullname username avatar" },
     });
 
+  // Dispatch System Notification
+  if (originalPost.author?._id) {
+    sendSystemNotification({
+      receiver: originalPost.author._id,
+      sender: req.user._id,
+      type: "repulse",
+      message: `@${req.user.username} re-pulsed and amplified your Pulse across the network 🔁`,
+      link: `/profile/${req.user.username}`,
+    }).catch((err) => console.error("Notification error:", err.message));
+  }
+
   return res
     .status(201)
-    .json(new ApiResponse(201, populatedRepost, "Post reposted successfully"));
+    .json(new ApiResponse(201, { unrepulsed: false, reposted: true, repost: populatedRepost }, "Pulse re-pulsed successfully"));
 });
-
-//abhi analytics baaki hai
-
-
 
 export {
   createPost,
@@ -291,7 +526,8 @@ export {
   getPostById,
   getUserFeed,
   getPostsByUsername,
+  getRepulsesByUsername,
   getUserAllPosts,
   togglePinnedPost,
   repost,
-};
+};

@@ -3,6 +3,7 @@ import ApiError from "../utils/apiError.js";
 import { ApiResponse } from "../utils/apiResponse.js";
 import { Follow } from "../models/follow.Model.js";
 import { User } from "../models/user.Model.js";
+import { sendSystemNotification } from "../utils/notificationHelper.js";
 
 const toggleFollow = asyncHandler(async (req, res) => {
   const { targetUserId } = req.params; // the user to follow/unfollow
@@ -26,10 +27,20 @@ const toggleFollow = asyncHandler(async (req, res) => {
       .json(new ApiResponse(200, null, "User unfollowed successfully"));
   } else {
     // Follow
-  const follow = await Follow.create({
+    const follow = await Follow.create({
       follower: currentUserId,
       following: targetUserId,
     });
+
+    // Dispatch System Notification
+    sendSystemNotification({
+      receiver: targetUserId,
+      sender: currentUserId,
+      type: "follow",
+      message: `@${req.user.username} established a Synaptic Connection with you 🔗`,
+      link: `/profile/${req.user.username}`,
+    }).catch((err) => console.error("Notification error:", err.message));
+
     return res
       .status(200)
       .json(new ApiResponse(200, follow, "User followed successfully"));

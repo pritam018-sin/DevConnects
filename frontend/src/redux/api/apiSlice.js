@@ -4,7 +4,7 @@ import { BASE_URL, USERS_URL } from "../constants.js";
 
 const baseQuery = fetchBaseQuery({
     baseUrl: BASE_URL,
-    credentials: "include", // send cookies (refresh cookie) if backend uses httpOnly cookies
+    credentials: "include", // Backend HTTP-Only cookies bhej sake isliye zaroori hai
     prepareHeaders: (headers, { getState }) => {
         const token = getState().auth.accessToken;
         if (token) headers.set("authorization", `Bearer ${token}`);
@@ -13,51 +13,42 @@ const baseQuery = fetchBaseQuery({
 });
 
 const baseQueryWithReauth = async (args, api, extraOptions) => {
-    // first try
+    // 1. Pehle normal request try karo
     let result = await baseQuery(args, api, extraOptions);
 
-    // if 401 -> try refresh, BUT skip if we were already trying to login
+    // 2. Agar 401 aaya, matlab token expire ho gaya (login API ko chhodkar)
     if (result?.error && result.error.status === 401 && args.url !== `${USERS_URL}/login`) {
         try {
-            // call refresh endpoint (send cookie or refresh token in body)
+            // Refresh token API call karo
             const refreshResult = await baseQuery(
                 {
                     url: `${USERS_URL}/refresh-token`,
                     method: "POST",
-                    // you can pass refreshToken in body if not using cookie:
-                    // body: { refreshToken: api.getState().auth.refreshToken }
                 },
                 api,
                 extraOptions
             );
 
+            // 3. Agar naya token mil gaya
             if (refreshResult?.data) {
-                // refresh endpoint returns { data: { accessToken, newRefreshToken } } (per your backend)
-                const newAccessToken = refreshResult.data.data?.accessToken || refreshResult.data.accessToken;
-                const newRefreshToken = refreshResult.data.data?.newRefreshToken || refreshResult.data.newRefreshToken;
+                // Backend se ApiResponse me data ke andar accessToken aata hai
+                const newAccessToken = refreshResult.data.data?.accessToken;
 
                 if (newAccessToken) {
-                    // update redux
+                    // Redux state me naya token update karo
                     api.dispatch(updateAccessToken(newAccessToken));
                 }
-                if (newRefreshToken) {
-                    // update refresh token in storage if returned
-                    api.dispatch(
-                        // reuse setCredentials to update only tokens safely
-                        // but we don't have user here; using updateAccessToken and localStorage set for refresh
-                        // simpler: update localStorage directly:
-                        // (not ideal, but fine)
-                        () => {
-                            localStorage.setItem("refreshToken", newRefreshToken);
-                            return { type: "auth/refresh-token-updated" };
-                        }
-                    );
-                }
 
-                // retry original
+                /* 
+                 HINT: newRefreshToken ko manually save karne ki zaroorat nahi hai.
+                 Backend ne "httpOnly" cookie me use set kar diya hai, browser use 
+                 automatically manage karega aur agli API calls me attach kar dega.
+                */
+
+                // 4. Puraani failed request ko naye token ke sath retry karo
                 result = await baseQuery(args, api, extraOptions);
             } else {
-                // refresh failed -> logout frontend
+                // Agar refresh api bhi fail ho gayi (jaise refresh token expire ho gaya)
                 api.dispatch(logout());
             }
         } catch (err) {
@@ -70,6 +61,6 @@ const baseQueryWithReauth = async (args, api, extraOptions) => {
 
 export const apiSlice = createApi({
     baseQuery: baseQueryWithReauth,
-    tagTypes: ["User", "Videos", "Channels", "Subscription", "Comment", "Playlist", "Tweet", "Post", "Project"],
+    tagTypes: ["User", "Post", "Project", "Comment", "Like", "Follow", "Notification", "Message"],
     endpoints: () => ({}),
 });

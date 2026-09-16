@@ -7,8 +7,8 @@ let refreshTokenFromStorage = null;
 try {
     const raw = localStorage.getItem("userInfo");
     if (raw && raw !== "undefined") userInfoFromStorage = JSON.parse(raw);
-    // accessTokenFromStorage = localStorage.getItem("accessToken") || null;
-    // refreshTokenFromStorage = localStorage.getItem("refreshToken") || null;
+    accessTokenFromStorage = localStorage.getItem("accessToken") || null;
+    refreshTokenFromStorage = localStorage.getItem("refreshToken") || null;
 } catch (err) {
     userInfoFromStorage = null;
     accessTokenFromStorage = null;
@@ -35,11 +35,11 @@ const authSlice = createSlice({
             if (user) localStorage.setItem("userInfo", JSON.stringify(user));
             else localStorage.removeItem("userInfo");
 
-            // if (accessToken) localStorage.setItem("accessToken", accessToken);
-            // else localStorage.removeItem("accessToken");
+            if (accessToken) localStorage.setItem("accessToken", accessToken);
+            else localStorage.removeItem("accessToken");
 
-            // if (refreshToken) localStorage.setItem("refreshToken", refreshToken);
-            // else localStorage.removeItem("refreshToken");
+            if (refreshToken) localStorage.setItem("refreshToken", refreshToken);
+            else localStorage.removeItem("refreshToken");
         },
         updateAccessToken: (state, action) => {
             state.accessToken = action.payload;

@@ -5,6 +5,7 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { Post } from "../models/post.Model.js";
 import { Project } from "../models/project.Model.js";
 import { Comment } from "../models/comment.Model.js";
+import { sendSystemNotification } from "../utils/notificationHelper.js";
 
 const getParentModel = (type) => {
   switch (type) {
@@ -38,19 +39,48 @@ const toggleLike = asyncHandler(async (req, res) => {
   if (existingLike) {
     // Unlike
     await existingLike.deleteOne();
-    await ParentModel.findByIdAndUpdate(parentId, { $pull: { likes: userId } });
+    const updated = await ParentModel.findByIdAndUpdate(
+      parentId,
+      { $pull: { likes: userId } },
+      { new: true }
+    );
     return res
       .status(200)
-      .json(new ApiResponse(200, null, `${parentType} unliked successfully`));
+      .json(new ApiResponse(200, { liked: false, totalLikes: updated?.likes?.length || 0 }, `${parentType} unliked successfully`));
   }
 
   // Like
   const newLike = await Like.create({ user: userId, parentId, parentType });
-  await ParentModel.findByIdAndUpdate(parentId, { $addToSet: { likes: userId } });
+  const updated = await ParentModel.findByIdAndUpdate(
+    parentId,
+    { $addToSet: { likes: userId } },
+    { new: true }
+  );
 
-  res
+  // Dispatch System Notification
+  const receiverId = parent.author || parent.owner;
+  if (receiverId) {
+    let notifMessage = `@${req.user.username} boosted your Pulse with a Quantum Signal ⚡`;
+    let notifLink = "/";
+    if (parentType === "Project") {
+      notifMessage = `@${req.user.username} signaled your Project Showcase "${parent.title || 'Project'}" 🚀`;
+      notifLink = "/projects";
+    } else if (parentType === "Comment") {
+      notifMessage = `@${req.user.username} signaled your discussion comment ⚡`;
+      notifLink = "/";
+    }
+    sendSystemNotification({
+      receiver: receiverId,
+      sender: userId,
+      type: parentType === "Project" ? "project_like" : "like",
+      message: notifMessage,
+      link: notifLink,
+    }).catch((err) => console.error("Notification error:", err.message));
+  }
+
+  return res
     .status(201)
-    .json(new ApiResponse(201, newLike, `${parentType} liked successfully`));
+    .json(new ApiResponse(201, { liked: true, totalLikes: updated?.likes?.length || 0 }, `${parentType} liked successfully`));
 });
 
 // ✅ Get All Likes for a Parent

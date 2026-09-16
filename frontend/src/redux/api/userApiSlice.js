@@ -11,11 +11,9 @@ export const userApiSlice = apiSlice.injectEndpoints({
             }),
         }),
         register: builder.mutation({
-            // multipart form (avatar + cover) required by your register route
             query: (formData) => ({
                 url: `${USERS_URL}/register`,
                 method: "POST",
-                // leave body as formData, RTK Query will send correct headers
                 body: formData,
             }),
         }),
@@ -25,17 +23,10 @@ export const userApiSlice = apiSlice.injectEndpoints({
                 method: "POST",
             }),
         }),
-        getCurrentUser: builder.query({
-            query: () => ({
-                url: `${USERS_URL}/current-user`,
-                method: "GET",
-            }),
-            providesTags: ["User"],
-        }),
         updateAccountDetails: builder.mutation({
             query: (userData) => ({
                 url: `${USERS_URL}/update-account`,
-                method: "PATCH",
+                method: "PUT",
                 body: userData,
             }),
             invalidatesTags: ["User"],
@@ -43,7 +34,7 @@ export const userApiSlice = apiSlice.injectEndpoints({
         updateAvatar: builder.mutation({
             query: (formData) => ({
                 url: `${USERS_URL}/update-avatar`,
-                method: "PATCH",
+                method: "PUT",
                 body: formData,
             }),
             invalidatesTags: ["User"],
@@ -51,7 +42,7 @@ export const userApiSlice = apiSlice.injectEndpoints({
         updateCover: builder.mutation({
             query: (formData) => ({
                 url: `${USERS_URL}/update-cover-image`,
-                method: "PATCH",
+                method: "PUT",
                 body: formData,
             }),
             invalidatesTags: ["User"],
@@ -68,19 +59,18 @@ export const userApiSlice = apiSlice.injectEndpoints({
                 url: `${USERS_URL}/user/${username}`,
                 method: "GET",
             }),
-            providesTags: ["User"],
+            providesTags: (result, error, arg) => [{ type: "User", id: arg }],
         }),
-        addToWatchHistory: builder.mutation({
-            query: (videoId) => ({
-                url: `${USERS_URL}/watch-history`,
-                method: "POST",
-                body: { videoId },
+        getUserById: builder.query({
+            query: (userId) => ({
+                url: `${USERS_URL}/id/${userId}`,
+                method: "GET",
             }),
+            providesTags: (result, error, arg) => [{ type: "User", id: arg }],
         }),
-
-        watchHistory: builder.query({
-            query: () => ({
-                url: `${USERS_URL}/watch-history`,
+        getAllUsers: builder.query({
+            query: (search = "") => ({
+                url: `${USERS_URL}/all-users${search ? `?search=${encodeURIComponent(search)}` : ""}`,
                 method: "GET",
             }),
             providesTags: ["User"],
@@ -92,12 +82,11 @@ export const {
     useLoginMutation,
     useRegisterMutation,
     useLogoutMutation,
-    useGetCurrentUserQuery,
     useUpdateAccountDetailsMutation,
     useUpdateAvatarMutation,
     useUpdateCoverMutation,
-    useGetUserProfileQuery,
-    useWatchHistoryQuery,
-    useAddToWatchHistoryMutation,
     useChangePasswordMutation,
+    useGetUserProfileQuery,
+    useGetUserByIdQuery,
+    useGetAllUsersQuery,
 } = userApiSlice;

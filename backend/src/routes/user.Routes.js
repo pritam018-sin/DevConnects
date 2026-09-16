@@ -9,9 +9,10 @@ import {
     refreshAccessToken,
     updateAccountDetails,
     updateAvatar,
-    updateCoverImage
+    updateCoverImage,
+    getAllUsers,
  } from "../controllers/user.Controller.js";
-import { verifyJWT } from "../middlewares/auth.Middlewares.js";
+import { verifyJWT, optionalVerifyJWT } from "../middlewares/auth.Middlewares.js";
 import { upload } from "../middlewares/mullter.Middlerware.js";
 
 const router = Router();
@@ -38,7 +39,10 @@ router.route("/change-password").post(verifyJWT, changeCurrentPassword)
 router.route("/update-account").put(verifyJWT, updateAccountDetails)
 router.route("/update-avatar").put(verifyJWT, upload.single("avatar"), updateAvatar);
 router.route("/update-cover-image").put(verifyJWT, upload.single("coverImage"), updateCoverImage);
-router.route("/user/:userId").get(verifyJWT, getUserProfileById)
-router.route("/user/:username").get(verifyJWT, getUserProfileByUsername)
+router.route("/all-users").get(optionalVerifyJWT, getAllUsers);
+router.route("/current-user").get(verifyJWT, getUserProfileById);
+router.route("/id/:userId").get(optionalVerifyJWT, getUserProfileById);
+router.route("/profile/:username").get(optionalVerifyJWT, getUserProfileByUsername);
+router.route("/user/:username").get(optionalVerifyJWT, getUserProfileByUsername);
 
 export default router;

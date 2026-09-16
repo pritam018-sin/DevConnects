@@ -17,14 +17,32 @@ const verifyJWT = asyncHandler(async (req, res, next) => {
     const user = await User.findById(decodedToken?._id).select("-password -refreshToken")
  
     if(!user){
-     throw new ApiError(401, "Invalid Access Token")
+      throw new ApiError(401, "Invalid Access Token")
     }
- 
-    req.user = user;
-    next()
-   } catch (error) {
-        throw new ApiError(402, error?.message || "Invalid access token")
-   }
-})
 
-export { verifyJWT };
+    req.user = user;
+    next();
+  } catch (error) {
+    throw new ApiError(401, error?.message || "Invalid access token");
+  }
+});
+
+const optionalVerifyJWT = asyncHandler(async (req, res, next) => {
+  try {
+    const token = req.cookies?.accessToken || req.header("Authorization")?.replace("Bearer ", "");
+    if (!token) {
+      return next();
+    }
+    const decodedToken = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+    const user = await User.findById(decodedToken?._id).select("-password -refreshToken");
+    if (user) {
+      req.user = user;
+    }
+    next();
+  } catch (error) {
+    // Graceful fallback for unauthenticated requests
+    next();
+  }
+});
+
+export { verifyJWT, optionalVerifyJWT };

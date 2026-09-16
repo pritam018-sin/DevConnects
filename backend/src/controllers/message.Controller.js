@@ -5,6 +5,7 @@ import { ApiResponse } from "../utils/apiResponse.js";
 import mongoose from "mongoose";
 import { User } from "../models/user.Model.js";
 import { io, onlineUsers } from "../socket/socket.js";
+import { sendSystemNotification } from "../utils/notificationHelper.js";
 
 
 // 🟩 Send new message
@@ -30,10 +31,20 @@ export const sendMessage = asyncHandler(async (req, res) => {
     io.to(receiverSocketId).emit("receiveMessage", newMessage);
   }
 
+  // Dispatch System Notification
+  const trimmedSnippet = content.trim().slice(0, 35) + (content.trim().length > 35 ? "..." : "");
+  sendSystemNotification({
+    receiver: receiverId,
+    sender: senderId,
+    type: "message",
+    message: `@${req.user.username} transmitted a direct message: "${trimmedSnippet}" 📡`,
+    link: `/messages?userId=${senderId}`,
+  }).catch((err) => console.error("Notification error:", err.message));
+
   return res
     .status(201)
     .json(new ApiResponse(201, newMessage, "Message sent successfully"));
-})
+});
 
 
 // 🟦 Fetch all messages between logged user and receiver
@@ -41,6 +52,18 @@ export const getMessages = async (req, res) => {
   try {
     const { receiverId } = req.params;
     const userId = req.user._id;
+
+    // Automatically mark incoming messages from this receiver as read
+    await Message.updateMany(
+      { sender: receiverId, receiver: userId, read: false },
+      { $set: { read: true } }
+    );
+
+    // Notify sender in real-time if online
+    const senderSocketId = onlineUsers?.get(receiverId?.toString());
+    if (senderSocketId && io) {
+      io.to(senderSocketId).emit("messagesRead", { readerId: userId.toString() });
+    }
 
     const messages = await Message.find({
       $or: [
@@ -150,9 +173,12 @@ export const getConversations = asyncHandler(async (req, res) => {
     {
       $project: {
         _id: 1,
+        "userDetails._id": 1,
         "userDetails.username": 1,
-        "userDetails.fullName": 1,
+        "userDetails.fullname": 1,
         "userDetails.avatar": 1,
+        "userDetails.bio": 1,
+        "userDetails.skills": 1,
         lastMessage: 1
       }
     },
