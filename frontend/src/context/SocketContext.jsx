@@ -22,7 +22,8 @@ export const SocketProvider = ({ children }) => {
     }
 
     // Connect to server (proxied by Vite or direct)
-    const newSocket = io({
+    const socketUrl = import.meta.env.VITE_API_URL || undefined;
+    const newSocket = io(socketUrl, {
       auth: {
         token: accessToken,
       },

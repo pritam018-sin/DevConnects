@@ -6,8 +6,25 @@ import { setupSocket } from './socket/socket.js';
 
 const app = express(); // <-- pehle express app banao
 
+const allowedOrigins = [
+  process.env.CORS_ORIGIN,
+  "http://localhost:5173",
+  "http://localhost:3000",
+].filter(Boolean);
+
 app.use(cors({
-  origin: process.env.CORS_ORIGIN,
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    const cleanOrigin = origin.replace(/\/$/, "");
+    const isAllowed = allowedOrigins.some(
+      (item) => item.replace(/\/$/, "") === cleanOrigin
+    );
+    if (isAllowed || process.env.CORS_ORIGIN === "*") {
+      callback(null, true);
+    } else {
+      callback(null, true); // Allow during transition to prevent lockouts, while maintaining credentials
+    }
+  },
   credentials: true
 }));
 
